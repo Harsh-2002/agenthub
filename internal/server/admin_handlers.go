@@ -5,7 +5,10 @@ import (
 	"encoding/hex"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"agenthub/internal/db"
 )
 
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +52,79 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		"id":      req.ID,
 		"api_key": apiKey,
 	})
+}
+
+func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	agents, err := s.db.ListAgents()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if agents == nil {
+		agents = []db.Agent{}
+	}
+	writeJSON(w, http.StatusOK, agents)
+}
+
+func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "agent id is required")
+		return
+	}
+	if err := s.db.DeleteAgent(id); err != nil {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
+}
+
+func (s *Server) handleAgentStats(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "agent id is required")
+		return
+	}
+	stats, err := s.db.GetAgentStats(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if stats == nil {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "channel name is required")
+		return
+	}
+	if err := s.db.DeleteChannel(name); err != nil {
+		if err.Error() != "" && strings.Contains(err.Error(), "cannot delete") {
+			writeError(w, http.StatusConflict, err.Error())
+		} else {
+			writeError(w, http.StatusNotFound, "channel not found")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
+}
+
+func (s *Server) handleDeletePost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid post id")
+		return
+	}
+	if err := s.db.SoftDeletePost(id); err != nil {
+		writeError(w, http.StatusNotFound, "post not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": strconv.Itoa(id)})
 }
 
 var agentIDRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)

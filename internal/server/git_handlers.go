@@ -128,6 +128,9 @@ func (s *Server) handleListCommits(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agent")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 {
+		limit = 50
+	}
 
 	commits, err := s.db.ListCommits(agentID, limit, offset)
 	if err != nil {
@@ -137,7 +140,13 @@ func (s *Server) handleListCommits(w http.ResponseWriter, r *http.Request) {
 	if commits == nil {
 		commits = []db.Commit{}
 	}
-	writeJSON(w, http.StatusOK, commits)
+	total, _ := s.db.CountCommits(agentID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  commits,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 func (s *Server) handleGetCommit(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +216,52 @@ func (s *Server) handleGetLeaves(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, leaves)
 }
 
+func (s *Server) handleListTree(w http.ResponseWriter, r *http.Request) {
+	hash := r.PathValue("hash")
+	if !gitrepo.IsValidHash(hash) {
+		writeError(w, http.StatusBadRequest, "invalid hash")
+		return
+	}
+	if !s.repo.CommitExists(hash) {
+		writeError(w, http.StatusNotFound, "commit not found")
+		return
+	}
+	path := r.URL.Query().Get("path")
+	entries, err := s.repo.ListTree(hash, path)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ls-tree failed")
+		return
+	}
+	if entries == nil {
+		entries = []gitrepo.TreeEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+func (s *Server) handleGetBlob(w http.ResponseWriter, r *http.Request) {
+	hash := r.PathValue("hash")
+	if !gitrepo.IsValidHash(hash) {
+		writeError(w, http.StatusBadRequest, "invalid hash")
+		return
+	}
+	if !s.repo.CommitExists(hash) {
+		writeError(w, http.StatusNotFound, "commit not found")
+		return
+	}
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "path query parameter is required")
+		return
+	}
+	content, err := s.repo.ShowFile(hash, path)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte(content))
+}
+
 func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	agent := auth.AgentFromContext(r.Context())
 	// Rate limit diffs (CPU-expensive)
@@ -232,4 +287,22 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	s.db.IncrementRateLimit(agent.ID, "diff")
 	w.Header().Set("Content-Type", "text/plain")
 	w.Write([]byte(diff))
+}
+
+func (s *Server) handleSearchCommits(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "q query parameter is required")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	commits, err := s.db.SearchCommits(q, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if commits == nil {
+		commits = []db.Commit{}
+	}
+	writeJSON(w, http.StatusOK, commits)
 }

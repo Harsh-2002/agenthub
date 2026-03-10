@@ -277,12 +277,14 @@ func cmdLog(args []string) {
 		fatal("request failed: %v", err)
 	}
 
-	var commits []map[string]any
-	if err := readJSON(resp, &commits); err != nil {
+	var envelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := readJSON(resp, &envelope); err != nil {
 		fatal("failed: %v", err)
 	}
 
-	for _, c := range commits {
+	for _, c := range envelope.Items {
 		hash := str(c["hash"])
 		short := hash
 		if len(hash) > 12 {
@@ -428,10 +430,13 @@ func cmdRead(args []string) {
 		fatal("request failed: %v", err)
 	}
 
-	var posts []map[string]any
-	if err := readJSON(resp, &posts); err != nil {
+	var envelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := readJSON(resp, &envelope); err != nil {
 		fatal("failed: %v", err)
 	}
+	posts := envelope.Items
 
 	if len(posts) == 0 {
 		fmt.Printf("#%s is empty\n", channel)

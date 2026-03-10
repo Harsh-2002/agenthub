@@ -19,11 +19,6 @@ type dashboardData struct {
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-
 	stats, _ := s.db.GetStats()
 	agents, _ := s.db.ListAgents()
 	commits, _ := s.db.ListCommits("", 50, 0)

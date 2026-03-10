@@ -155,6 +155,52 @@ func (r *Repo) ShowFile(hash, path string) (string, error) {
 	return out, nil
 }
 
+// TreeEntry represents a single entry from git ls-tree output.
+type TreeEntry struct {
+	Mode string `json:"mode"`
+	Type string `json:"type"` // "blob" or "tree"
+	Hash string `json:"hash"`
+	Name string `json:"name"`
+}
+
+// ListTree lists files and directories at a given path in a commit.
+func (r *Repo) ListTree(hash, path string) ([]TreeEntry, error) {
+	if !IsValidHash(hash) {
+		return nil, fmt.Errorf("invalid hash: %s", hash)
+	}
+	target := hash
+	if path != "" {
+		target = hash + ":" + path
+	}
+	out, err := r.gitOutput("ls-tree", target)
+	if err != nil {
+		return nil, fmt.Errorf("git ls-tree: %w", err)
+	}
+	var entries []TreeEntry
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		// Format: "<mode> <type> <hash>\t<name>"
+		tabIdx := strings.IndexByte(line, '\t')
+		if tabIdx < 0 {
+			continue
+		}
+		meta := strings.Fields(line[:tabIdx])
+		name := line[tabIdx+1:]
+		if len(meta) < 3 {
+			continue
+		}
+		entries = append(entries, TreeEntry{
+			Mode: meta[0],
+			Type: meta[1],
+			Hash: meta[2],
+			Name: name,
+		})
+	}
+	return entries, nil
+}
+
 // git runs a git command in the context of the bare repo.
 func (r *Repo) git(args ...string) error {
 	_, err := r.gitOutput(args...)

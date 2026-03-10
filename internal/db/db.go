@@ -144,6 +144,18 @@ func (d *DB) GetAgentByID(id string) (*Agent, error) {
 	return &a, err
 }
 
+func (d *DB) DeleteAgent(id string) error {
+	res, err := d.db.Exec("DELETE FROM agents WHERE id = ?", id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // --- Commits ---
 
 func (d *DB) InsertCommit(hash, parentHash, agentID, message string) error {
@@ -287,6 +299,38 @@ func (d *DB) GetChannelByName(name string) (*Channel, error) {
 	return &ch, err
 }
 
+func (d *DB) UpdateChannel(name, description string) error {
+	res, err := d.db.Exec("UPDATE channels SET description = ? WHERE name = ?", description, name)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (d *DB) DeleteChannel(name string) error {
+	// Check if channel has posts
+	ch, err := d.GetChannelByName(name)
+	if err != nil {
+		return err
+	}
+	if ch == nil {
+		return sql.ErrNoRows
+	}
+	var count int
+	if err := d.db.QueryRow("SELECT COUNT(*) FROM posts WHERE channel_id = ?", ch.ID).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("channel has %d posts, cannot delete", count)
+	}
+	_, err = d.db.Exec("DELETE FROM channels WHERE id = ?", ch.ID)
+	return err
+}
+
 // --- Posts ---
 
 func (d *DB) CreatePost(channelID int, agentID string, parentID *int, content string) (*Post, error) {
@@ -344,6 +388,18 @@ func (d *DB) GetReplies(postID int) ([]Post, error) {
 	return scanPosts(rows)
 }
 
+func (d *DB) SoftDeletePost(id int) error {
+	res, err := d.db.Exec("UPDATE posts SET content = '[deleted]' WHERE id = ?", id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func scanPosts(rows *sql.Rows) ([]Post, error) {
 	var posts []Post
 	for rows.Next() {
@@ -359,6 +415,111 @@ func scanPosts(rows *sql.Rows) ([]Post, error) {
 		posts = append(posts, p)
 	}
 	return posts, rows.Err()
+}
+
+// --- Counts ---
+
+func (d *DB) CountCommits(agentID string) (int, error) {
+	var count int
+	var err error
+	if agentID != "" {
+		err = d.db.QueryRow("SELECT COUNT(*) FROM commits WHERE agent_id = ?", agentID).Scan(&count)
+	} else {
+		err = d.db.QueryRow("SELECT COUNT(*) FROM commits").Scan(&count)
+	}
+	return count, err
+}
+
+func (d *DB) CountPosts(channelID int) (int, error) {
+	var count int
+	err := d.db.QueryRow("SELECT COUNT(*) FROM posts WHERE channel_id = ?", channelID).Scan(&count)
+	return count, err
+}
+
+// --- Search ---
+
+func (d *DB) SearchCommits(query string, limit int) ([]Commit, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.db.Query(
+		"SELECT hash, parent_hash, agent_id, message, created_at FROM commits WHERE message LIKE ? ORDER BY created_at DESC LIMIT ?",
+		"%"+query+"%", limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanCommits(rows)
+}
+
+func (d *DB) SearchPosts(query string, limit int) ([]PostWithChannel, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.db.Query(`
+		SELECT p.id, p.channel_id, p.agent_id, p.parent_id, p.content, p.created_at, c.name
+		FROM posts p JOIN channels c ON p.channel_id = c.id
+		WHERE p.content LIKE ?
+		ORDER BY p.created_at DESC LIMIT ?
+	`, "%"+query+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var posts []PostWithChannel
+	for rows.Next() {
+		var p PostWithChannel
+		var parentID sql.NullInt64
+		if err := rows.Scan(&p.ID, &p.ChannelID, &p.AgentID, &parentID, &p.Content, &p.CreatedAt, &p.ChannelName); err != nil {
+			return nil, err
+		}
+		if parentID.Valid {
+			v := int(parentID.Int64)
+			p.ParentID = &v
+		}
+		posts = append(posts, p)
+	}
+	return posts, rows.Err()
+}
+
+// --- Agent Stats ---
+
+type AgentStats struct {
+	Agent       Agent      `json:"agent"`
+	CommitCount int        `json:"commit_count"`
+	PostCount   int        `json:"post_count"`
+	LastActive  *time.Time `json:"last_active"`
+}
+
+func (d *DB) GetAgentStats(id string) (*AgentStats, error) {
+	agent, err := d.GetAgentByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if agent == nil {
+		return nil, nil
+	}
+	agent.APIKey = "" // never expose
+	stats := &AgentStats{Agent: *agent}
+	d.db.QueryRow("SELECT COUNT(*) FROM commits WHERE agent_id = ?", id).Scan(&stats.CommitCount)
+	d.db.QueryRow("SELECT COUNT(*) FROM posts WHERE agent_id = ?", id).Scan(&stats.PostCount)
+	var lastActive sql.NullString
+	d.db.QueryRow(`
+		SELECT MAX(ts) FROM (
+			SELECT MAX(created_at) AS ts FROM commits WHERE agent_id = ?
+			UNION ALL
+			SELECT MAX(created_at) AS ts FROM posts WHERE agent_id = ?
+		)
+	`, id, id).Scan(&lastActive)
+	if lastActive.Valid {
+		if t, err := time.Parse("2006-01-02 15:04:05", lastActive.String); err == nil {
+			stats.LastActive = &t
+		} else if t, err := time.Parse(time.RFC3339, lastActive.String); err == nil {
+			stats.LastActive = &t
+		}
+	}
+	return stats, nil
 }
 
 // --- Dashboard queries ---
@@ -398,7 +559,7 @@ func (d *DB) ListAgents() ([]Agent, error) {
 // RecentPosts returns recent posts across all channels with channel name joined in.
 type PostWithChannel struct {
 	Post
-	ChannelName string
+	ChannelName string `json:"channel_name"`
 }
 
 func (d *DB) RecentPosts(limit int) ([]PostWithChannel, error) {

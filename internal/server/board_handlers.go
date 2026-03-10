@@ -60,6 +60,23 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, ch)
 }
 
+func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var req struct {
+		Description string `json:"description"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := s.db.UpdateChannel(name, req.Description); err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	ch, _ := s.db.GetChannelByName(name)
+	writeJSON(w, http.StatusOK, ch)
+}
+
 func (s *Server) handleListPosts(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	ch, err := s.db.GetChannelByName(name)
@@ -74,6 +91,9 @@ func (s *Server) handleListPosts(w http.ResponseWriter, r *http.Request) {
 
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 {
+		limit = 50
+	}
 
 	posts, err := s.db.ListPosts(ch.ID, limit, offset)
 	if err != nil {
@@ -83,7 +103,13 @@ func (s *Server) handleListPosts(w http.ResponseWriter, r *http.Request) {
 	if posts == nil {
 		posts = []db.Post{}
 	}
-	writeJSON(w, http.StatusOK, posts)
+	total, _ := s.db.CountPosts(ch.ID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  posts,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 func (s *Server) handleCreatePost(w http.ResponseWriter, r *http.Request) {
@@ -201,4 +227,22 @@ func (s *Server) handleGetReplies(w http.ResponseWriter, r *http.Request) {
 		replies = []db.Post{}
 	}
 	writeJSON(w, http.StatusOK, replies)
+}
+
+func (s *Server) handleSearchPosts(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "q query parameter is required")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	posts, err := s.db.SearchPosts(q, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if posts == nil {
+		posts = []db.PostWithChannel{}
+	}
+	writeJSON(w, http.StatusOK, posts)
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 
@@ -50,18 +51,32 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("GET /api/git/commits/{hash}/children", authMw(http.HandlerFunc(s.handleGetChildren)))
 	s.mux.Handle("GET /api/git/commits/{hash}/lineage", authMw(http.HandlerFunc(s.handleGetLineage)))
 	s.mux.Handle("GET /api/git/leaves", authMw(http.HandlerFunc(s.handleGetLeaves)))
+	s.mux.Handle("GET /api/git/tree/{hash}", authMw(http.HandlerFunc(s.handleListTree)))
+	s.mux.Handle("GET /api/git/blob/{hash}", authMw(http.HandlerFunc(s.handleGetBlob)))
 	s.mux.Handle("GET /api/git/diff/{hash_a}/{hash_b}", authMw(http.HandlerFunc(s.handleDiff)))
 
 	// Message board endpoints
 	s.mux.Handle("GET /api/channels", authMw(http.HandlerFunc(s.handleListChannels)))
 	s.mux.Handle("POST /api/channels", authMw(http.HandlerFunc(s.handleCreateChannel)))
+	s.mux.Handle("PATCH /api/channels/{name}", authMw(http.HandlerFunc(s.handleUpdateChannel)))
 	s.mux.Handle("GET /api/channels/{name}/posts", authMw(http.HandlerFunc(s.handleListPosts)))
 	s.mux.Handle("POST /api/channels/{name}/posts", authMw(http.HandlerFunc(s.handleCreatePost)))
 	s.mux.Handle("GET /api/posts/{id}", authMw(http.HandlerFunc(s.handleGetPost)))
 	s.mux.Handle("GET /api/posts/{id}/replies", authMw(http.HandlerFunc(s.handleGetReplies)))
 
+	// Search endpoints
+	s.mux.Handle("GET /api/search/commits", authMw(http.HandlerFunc(s.handleSearchCommits)))
+	s.mux.Handle("GET /api/search/posts", authMw(http.HandlerFunc(s.handleSearchPosts)))
+
+	// Agent stats
+	s.mux.Handle("GET /api/agents/{id}/stats", authMw(http.HandlerFunc(s.handleAgentStats)))
+
 	// Admin endpoints
+	s.mux.Handle("GET /api/admin/agents", adminMw(http.HandlerFunc(s.handleListAgents)))
 	s.mux.Handle("POST /api/admin/agents", adminMw(http.HandlerFunc(s.handleCreateAgent)))
+	s.mux.Handle("DELETE /api/admin/agents/{id}", adminMw(http.HandlerFunc(s.handleDeleteAgent)))
+	s.mux.Handle("DELETE /api/admin/channels/{name}", adminMw(http.HandlerFunc(s.handleDeleteChannel)))
+	s.mux.Handle("DELETE /api/admin/posts/{id}", adminMw(http.HandlerFunc(s.handleDeletePost)))
 
 	// Public registration (no auth, rate-limited by IP)
 	s.mux.HandleFunc("POST /api/register", s.handleRegister)
@@ -72,7 +87,11 @@ func (s *Server) setupRoutes() {
 	})
 
 	// Dashboard (no auth, public read-only)
-	s.mux.HandleFunc("GET /", s.handleDashboard)
+	s.mux.HandleFunc("GET /dashboard", s.handleDashboard)
+
+	// Static files (embedded frontend)
+	staticSub, _ := fs.Sub(staticFS, "static")
+	s.mux.Handle("GET /", http.FileServer(http.FS(staticSub)))
 }
 
 func (s *Server) ListenAndServe() error {
